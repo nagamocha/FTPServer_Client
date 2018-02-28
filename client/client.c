@@ -1,130 +1,382 @@
-// Client side C/C++ program to demonstrate Socket programming
+/*
+Implements active FTP
+
+*/
 #include <stdio.h>
 #include <sys/socket.h>
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <string.h>
-#include <unistd.h> //for read
+#include <unistd.h> //for read, getcwd()
 #include <arpa/inet.h>//for inet_pton
 #include <errno.h>
+#include <netdb.h>
+#include <inttypes.h>
+#include <dirent.h>//for DIR cmds sections
+#include <wordexp.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
 
-#define servPORT 8090
-#define FILENAME
+#define servPORT "8090"
+#define servIP "127.0.0.1"
+#define BUF_SIZE 1024
+#define RESET_BUF(buf) memset(buf, 0, BUF_SIZE)
 ssize_t rio_writen(int fd, void* usrbuf, size_t n);
 ssize_t rio_readn(int fd, void* usrbuf, size_t n);
-int main(int argc, char const *argv[])
-{
-    struct sockaddr_in address;
-    struct sockaddr_in serv_addr;
-    //-----
+
+#define DIR_PATH_SIZE 2048
+
+void* get_in_addr(struct sockaddr *sa){
+    return &(((struct sockaddr_in*)sa)->sin_addr);
+}
+
+int get_connection_sock(char* serv_IP, char* serv_PORT);
+
+int procedure_get_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT);
+int procedure_put_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT);
+int procedure_list_files(char* current_dir);
+void procedure_change_directory(char * current_directory, char * new_directory);
+// path =  ./f.txt
+
+int main(){
+    int cmdSOCK, ret, status;
+    //cmdline vars
+    char buffer[BUF_SIZE];
+    char args[2][10];
+    //sending cmds
     char *line = NULL;
     size_t len = 0;
     ssize_t nread;
-    //----
-    int sock = 0, valread;
-    char *hello = "Hello from client";
-    char buffer[1024] = {0};
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
-    {
-        printf("\n Socket creation error \n");
-        return -1;
+    //for file transfer
+    char strn_file_port[50];
+    intmax_t filesize;
+    //for directory commands
+    char current_dir[DIR_PATH_SIZE];
+    getcwd(current_dir, DIR_PATH_SIZE);
+
+    if((cmdSOCK= get_connection_sock(servIP, servPORT)) < 0){
+        fprintf(stderr, "%s\n", "Cannot connect to FTP Server");
+        exit(1);
     }
 
-    memset(&serv_addr, 0, sizeof(serv_addr));
+    while(1){
+        //credits to NABIL for cmd line parsing:
+        //source: https://nabilrahiman.hosting.nyu.edu/simple-command-line-parsing-in-c/
+        printf("ftp> ");
+        fgets(buffer, sizeof(buffer), stdin);
+        ret = sscanf(buffer, "%s %s", args[0], args[1]);
+        if(strcmp(args[0], "QUIT") == 0) break;//ideally, cliet should send quit command to server so that it can clean up, but hey, deadline  ¯\_(ツ)_/¯
 
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(servPORT);
+        else if(strcmp(args[0], "PUT") == 0){
+            //check if we have file
 
-    // Convert IPv4 and IPv6 addresses from text to binary form
-    if(inet_pton(AF_INET, "127.0.0.1", &serv_addr.sin_addr)<=0)
-    {
-        printf("\nInvalid address/ Address not supported \n");
-        return -1;
+            int fileFD, n_file_port = 0;
+            struct stat file_stat;
+            char temp[20];
+            //RESET_BUF(buffer);
+            fileFD = open(args[1], O_RDONLY, 0);
+            //cint fileFD = open(args[1], O_RDONLY, 0);
+            if((fstat(fileFD, &file_stat)) < 0){
+                printf("Error: Eo such file\n\n");
+                continue;
+            }
+
+            sprintf(temp, "%jd", (intmax_t)file_stat.st_size);
+            strcat(buffer, temp);
+
+            rio_writen(cmdSOCK, buffer, strlen(buffer));
+            printf("Setting up connection for file transfer ...\n");
+            RESET_BUF(buffer);
+            nread = read(cmdSOCK, buffer, BUF_SIZE);
+            if(nread == 0) {printf("Connection closed by server\n");break;}
+            if(strcmp(buffer, "530") == 0){
+                printf("NOT AUTHORIZED\n\n"); continue;
+            }
+            //at this point we suppose server has postive reply
+            sscanf(buffer, "%d", &n_file_port);
+            if (n_file_port == 0){
+                //if file is available and can be sent ftp server will always assign a nonzero port number
+                printf("FTP: No such file\n\n");
+            }else{
+                sprintf(strn_file_port, "%d", n_file_port);//convert
+                printf("UPLOADING FILE_SIZE: %jd PORT: %s\n", (intmax_t)file_stat.st_size, strn_file_port);
+                //server will reply with file size and port, in buffer
+                status = procedure_put_file(cmdSOCK, fileFD, servIP, strn_file_port);
+                //do error checking for get_file_procedure
+            }
+
+            //receive
+
+            //receive port number for file connection
+
+
+
+        }
+        else if(strcmp(args[0], "GET") == 0){
+            int n_file_port = 0;
+            //TODO FIRST CHECK IF WE CAN OPEN FILE, BEFORE SENDING COMMAND TO SERVER
+            //TRY TO OPEN FILE FIRST, set to write
+            int fileFD;//=open(args[1]) bla bla bla
+
+            //If successful, send GET command to FTP
+            rio_writen(cmdSOCK, buffer, strlen(buffer));
+            RESET_BUF(buffer);
+
+            //FTP will reply with info that'll help set up the file transfer
+            nread = read(cmdSOCK, buffer, BUF_SIZE);
+            if(nread == 0) {printf("Connection closed by server\n");break;}
+            if(strcmp(buffer, "530") == 0){
+                printf("NOT AUTHORIZED\n\n"); continue;
+            }
+            //at this point we suppose server has postive reply
+            sscanf(buffer, "%jd %d", &filesize, &n_file_port);
+            if (n_file_port == 0){
+                //if file is available and can be sent ftp server will always assign a nonzero port number
+                printf("FTP: No such file\n\n");
+            }else{
+                sprintf(strn_file_port, "%d", n_file_port);//convert
+                fprintf(stdout, "RECEIVING FILE_SIZE: %jd PORT: %s\n", filesize, strn_file_port);
+                //server will reply with file size and port, in buffer
+                status = procedure_get_file(cmdSOCK, fileFD, servIP, strn_file_port);
+                //do error checking for get_file_procedure
+            }
+            continue;
+        }
+        else if(strcmp(args[0], "!LS") == 0){
+            //TODO make it more like terminal's CD, ie less simplistic
+            //currently can only support LS for CWD
+            procedure_list_files(current_dir);
+            continue;
+        }
+        else if(strcmp(args[0], "!PWD") == 0){
+            printf("%s\n\n",current_dir);
+            continue;
+        }
+        else if(strcmp(args[0], "!CD") == 0){
+            procedure_change_directory(current_dir, args[1]);
+            continue;
+        }
+        else{//USER PASS other cmds
+            rio_writen(cmdSOCK, buffer, strlen(buffer));
+            RESET_BUF(buffer);
+
+            nread = read(cmdSOCK, buffer, BUF_SIZE);
+            if(nread == 0) {printf("Connection closed by server\n");break;}
+            if(strcmp(buffer, "530") == 0){
+                printf("NOT AUTHORIZED\n\n"); continue;
+            }
+            printf("%s\n\n", buffer);
+        }
     }
 
-    //connect step
-    if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
-    {
-        printf("\nConnection Failed \n");
-        return -1;
-    }
-    nread = getline(&line, &len, stdin);
-    rio_writen(sock, line, nread);
-    //send(sock , hello , strlen(hello) , 0 );
-    printf("Hello message sent\n");
-    valread = read(sock , line, 1024);
-    printf("%s\n",line);
+
+    printf("DUNZO\n");
+
+
+    close(cmdSOCK);
     return 0;
 }
 
-/*
-//On successful completion should return 0
-//recvPORT should be a cstyle string, rcv PORT from server
-//ideally, the ftp server should have provided the size of the bytes beforehand
-//(1)consider breaking up this function into 2 st that first half deals with
-//creating socket + port,
-//sendin PORT needs to know which port we are receiving on so that it
-//can getaddrinfo(), create socket, connect() that socket and sendfile() to that socket
-//from which we can recieve
-//(2) to avoid code repetition, the create socket part should have it's own function
-int receive_file(char* sourcePORT, char* rcvFILENAME, size_t file_size, int newFD){
-    //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-
-    //create connection between Server sendfile PORT and our receive file PORT
-    struct addrinfo hints, *servinfo, *p;
-    int file_sockfd, status;
-    char* rcvBUFFER;
-    ssize_t n_IO;
+//Given server IP, and server PORT, sets up a connection socket
+//returns socket fd,
+//on failure, returns -1;
+int get_connection_sock(char* serv_IP, char* serv_PORT){
+    int cmdSOCK, status;
+    struct sockaddr_in serv_addr;
+    struct addrinfo hints, *servINFO, *p;
+    char s[INET_ADDRSTRLEN];
+
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    if ((status = getaddrinfo(argv[1], sourcePORT, &hints, &servinfo)) != 0) {
-        fprintf(stderr, "receive_file getaddrinfo: %s\n", gai_strerror(status));
+
+    if((status = getaddrinfo(serv_IP, serv_PORT, &hints, &servINFO)) != 0){
+        fprintf(stderr, "getaddrinfo(): %s\n", gai_strerror(status));
         return -1;
     }
-    for(p = servinfo; p != NULL; p = p->ai_next) {
-        if ((file_sockfd = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) == -1) {
-            fprintf(stderr, "receive_file client: socket() error\n");
+
+    for(p = servINFO; p != NULL; p = p->ai_next) {
+        if ((cmdSOCK = socket(p->ai_family, p->ai_socktype,p->ai_protocol)) < 0) {
+            perror("socket failed\n");
             continue;
         }
-        if (connect(file_sockfd, p->ai_addr, p->ai_addrlen) == -1) {
-            close(file_sockfd);
-            fprintf(stderr, "receive_file client: connect() error\n");
+        if(connect(cmdSOCK, p->ai_addr, p->ai_addrlen) == -1){
+            close(cmdSOCK);
+            perror("client: connect");
             continue;
         }
         break;
     }
-    if (p == NULL) {
-        fprintf(stderr, "client: failed to connect\n");
-        return -1;
-    }
-    freeaddrinfo(servinfo);
-    //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-
-    //Transfer file from ftp server to local file
-    if((rcvBUFFER = malloc(file_size) == NULL){
-        fprintf(stderr, "receive_file client: malloc() rcvBUFFER error\n");
-        return -1;
-    }
-    //Robust read from socket to buffer;
-    if ((n_IO = rio_readn(file_sockfd, rcvBUFFER, file_size)) == -1){
-        fprintf(stderr, "read to rcvBUFFER from file_sockfd error\n");
+    if(p == NULL){
+        fprintf(stderr, "Client: failed to connect\n");
         return -1;
     }
 
-    //Robust write;
-    if ((n_IO = rio_writen(newFD, rcvBUFFER, file_size)) == -1){
-        fprintf(stderr, "read to rcvBUFFER from file_sockfd error\n");
-        return -1;
-    }
+    inet_ntop(p->ai_family, get_in_addr((struct sockaddr *)p->ai_addr), s, sizeof(s));
+    printf("client: connecting to %s, port: %s\n\n",s, serv_PORT);
+    freeaddrinfo(servINFO);//clean up
 
-
-    //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-
-    //clean up and return;
-    free(rcvBUFFER);
-    close(file_sockfd);//do error checking
-    return 0;//successful completion :-)
-    //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-
+    return cmdSOCK;
 }
-*/
+
+
+
+int procedure_put_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT){
+    int new_fileSOCK;
+    //given the port from the server, client attempts to connect to that port
+    if((new_fileSOCK= get_connection_sock(serv_IP, serv_PORT)) < 0){
+        fprintf(stderr, "%s\n", "Cannot connect to FTP Server");
+        return -1;
+    }
+
+    //test msg:
+    char* reply = "LI LI LI lick my balls!!!";
+    rio_writen(new_fileSOCK, reply, strlen(reply));
+
+    close(new_fileSOCK);
+    return 1;
+}
+
+
+//get file should also recieve file name from argv[1
+//client should be able to parse reply from SERVER
+int procedure_get_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT){
+    char file_buffer[BUF_SIZE];
+    int new_fileSOCK;
+
+    //client side will receive file transfer PORT and file size, b
+    //Suggestion: do all buffer stuff in main loop,
+
+
+    //given the port from the server, client attempts to connect to that port
+    if((new_fileSOCK= get_connection_sock(serv_IP, serv_PORT)) < 0){
+        fprintf(stderr, "%s\n", "Cannot connect to FTP Server");
+        return -1;
+    }
+    //read from connection sock
+    //will be done in main CLI
+
+    //client reads from that port
+    int nread = read(new_fileSOCK, file_buffer, BUF_SIZE);
+    if(nread == 0) {printf("Connection closed by server\n");}
+    printf("FILE FROM SERV: %s\n", file_buffer);
+
+    //client closes SOCK
+    close(new_fileSOCK);
+    //return, at any given moment, if any error occurs
+    return 1;
+}
+
+int procedure_list_files(char* current_dir){
+    DIR *dir;
+    struct dirent *ent;
+    if ((dir = opendir (current_dir)) != NULL) {
+        //print all the files and directories within directory
+        while ((ent = readdir (dir)) != NULL) {
+            printf ("%s\n", ent->d_name);
+        }
+        closedir (dir);
+        printf("\n");
+        return 1;
+    }else{
+        perror ("could not open directory\n\n");
+        return 0;
+    }
+}
+
+void procedure_change_directory(char * current_dir, char * new_dir){
+    //credits: github/mslos
+	char new_path[DIR_PATH_SIZE];
+    DIR* dir;
+	if(new_dir[0] == '/') {
+		strcpy(new_path,new_dir);
+	}
+	else if (new_dir[0]=='~') {//shell-tilder expansion for tilde
+	   	wordexp_t p;//for
+	   	wordexp(new_dir, &p, 0);
+	    strcpy(new_path,p.we_wordv[0]);
+	    wordfree(&p);
+	}
+	else
+		strcat(strcat(strcpy(new_path,current_dir),"/"),new_dir);
+
+	if ((dir = opendir(new_path))) {
+		realpath(new_path,current_dir);
+        printf("%s\n\n",current_dir);
+        //printf("%s\n\n", new_dir);
+	    closedir(dir);
+	}
+	else{
+        printf("CD error\n\n");
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 //transfers n bytes from file fd to userbuf
 //Robust Read
 //can only return short count if it encounters EOF
@@ -169,35 +421,6 @@ ssize_t rio_writen(int fd, void* usrbuf, size_t n){
 
     return n;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
