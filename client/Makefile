@@ -1,8 +1,5 @@
-client: client1.1.c
-	gcc client1.1.c -o client
-
-fclient:client.c
-	gcc client.c -o fclient
+client: client.c
+	gcc client.c -o client
 
 clean:
 	rm *.o client
