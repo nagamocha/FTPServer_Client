@@ -33,7 +33,7 @@ void* get_in_addr(struct sockaddr *sa){
 
 int get_connection_sock(char* serv_IP, char* serv_PORT);
 
-int procedure_get_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT);
+int procedure_get_file(int cmdSOCK, FILE* file_fp, char* serv_IP, char* serv_PORT);
 int procedure_put_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT);
 int procedure_list_files(char* current_dir);
 void procedure_change_directory(char * current_directory, char * new_directory);
@@ -117,7 +117,11 @@ int main(){
             int n_file_port = 0;
             //TODO FIRST CHECK IF WE CAN OPEN FILE, BEFORE SENDING COMMAND TO SERVER
             //TRY TO OPEN FILE FIRST, set to write
-            int fileFD;//=open(args[1]) bla bla bla
+            FILE* file_fp = fopen(args[1], "a");
+            if(file_fp == NULL){
+                perror("Error: ");
+                continue;
+            }
 
             //If successful, send GET command to FTP
             rio_writen(cmdSOCK, buffer, strlen(buffer));
@@ -127,7 +131,7 @@ int main(){
             nread = read(cmdSOCK, buffer, BUF_SIZE);
             if(nread == 0) {printf("Connection closed by server\n");break;}
             if(strcmp(buffer, "530") == 0){
-                printf("NOT AUTHORIZED\n\n"); continue;
+                printf("530 NOT AUTHORIZED\n\n"); continue;
             }
             //at this point we suppose server has postive reply
             sscanf(buffer, "%jd %d", &filesize, &n_file_port);
@@ -138,7 +142,7 @@ int main(){
                 sprintf(strn_file_port, "%d", n_file_port);//convert
                 fprintf(stdout, "RECEIVING FILE_SIZE: %jd PORT: %s\n", filesize, strn_file_port);
                 //server will reply with file size and port, in buffer
-                status = procedure_get_file(cmdSOCK, fileFD, servIP, strn_file_port);
+                status = procedure_get_file(cmdSOCK, file_fp, servIP, strn_file_port);
                 //do error checking for get_file_procedure
             }
             continue;
@@ -241,9 +245,10 @@ int procedure_put_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT){
 
 //get file should also recieve file name from argv[1
 //client should be able to parse reply from SERVER
-int procedure_get_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT){
+int procedure_get_file(int cmdSOCK, FILE* file_fp, char* serv_IP, char* serv_PORT){
     char file_buffer[BUF_SIZE];
     int new_fileSOCK;
+    unsigned bytes_downloaded;
 
     //client side will receive file transfer PORT and file size, b
     //Suggestion: do all buffer stuff in main loop,
@@ -254,14 +259,16 @@ int procedure_get_file(int cmdSOCK, int fileFD, char* serv_IP, char* serv_PORT){
         fprintf(stderr, "%s\n", "Cannot connect to FTP Server");
         return -1;
     }
-    //read from connection sock
-    //will be done in main CLI
 
-    //client reads from that port
-    int nread = read(new_fileSOCK, file_buffer, BUF_SIZE);
-    if(nread == 0) {printf("Connection closed by server\n");}
-    printf("FILE FROM SERV: %s\n", file_buffer);
-
+    do{
+        bytes_downloaded = read(new_fileSOCK, file_buffer, BUF_SIZE);
+        //printf("bytes downloaded: %d\n", bytes_downloaded);
+        fwrite(file_buffer, sizeof(char), bytes_downloaded,file_fp);
+        //fputs(file_buffer, file_fp);
+    }while(bytes_downloaded >  0);
+    if((int)bytes_downloaded < 0) perror("Error downloading file");
+    if(bytes_downloaded == 0)printf("Completed Downloading\n");
+    fclose(file_fp);
     //client closes SOCK
     close(new_fileSOCK);
     //return, at any given moment, if any error occurs
@@ -310,7 +317,6 @@ void procedure_change_directory(char * current_dir, char * new_dir){
 	else{
         printf("CD error\n\n");
     }
-
 }
 
 
@@ -376,7 +382,7 @@ void procedure_change_directory(char * current_dir, char * new_dir){
 
 
 
-
+//Credits: CSAPP, Bryant, O'Hallaron
 //transfers n bytes from file fd to userbuf
 //Robust Read
 //can only return short count if it encounters EOF
@@ -401,6 +407,7 @@ ssize_t rio_readn(int fd, void* usrbuf, size_t n){
     return (n - nleft);
 }
 
+//Credits: CSAPP, Bryant, O'Hallaron
 //transfers n bytes from usrbuf to file fd
 //Robust: never returns a short count
 //Returns number of of bytes transfered

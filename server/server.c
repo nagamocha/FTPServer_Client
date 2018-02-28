@@ -17,11 +17,14 @@
 #include <dirent.h>//for DIR cmds sections
 #include <wordexp.h>
 
+//for sendfile(), mac
+#include <sys/uio.h>
 
 #include "users.h"
 
 #define _PORT "8090"
 #define BUF_SIZE 1024
+#define DIR_PATH_SIZE 2048
 #define RESET_BUF(buf) memset(buf, 0, BUF_SIZE)
 #define LISTEN_QUEUE_SIZE 10 //connections queue for listen(),
 
@@ -29,7 +32,7 @@
 int get_listensockfd(char* PORT);
 int get_port_from_sock(int sock);
 
-
+//
 //once a user establishes a connection, their socket becomes assc with this obj
 typedef struct{
     int sock;
@@ -45,6 +48,8 @@ typedef struct {
     int fsock;
     int mode;//either GET(1) or PUT(2)
     Account* user_p;
+    int file_FD;
+    off_t file_size;
 }ft_main_obj;
 
 void reset_client_obj(client_obj* client){
@@ -64,6 +69,8 @@ void reset_ft_struct_obj(ft_main_obj* ft_l_obj_p){
         ft_l_obj_p->user_p = NULL;
         ft_l_obj_p->fsock = -1;
         ft_l_obj_p->mode = 0;
+        ft_l_obj_p->file_FD = 0;
+        ft_l_obj_p->file_size = 0;
     }
 }
 
@@ -72,11 +79,12 @@ void list_files_cmd(client_obj* client);
 void pwd_cmd(client_obj* client);
 void user_cmd(char* name_arg, Account Accounts_arr[], client_obj* client);
 void pass_cmd(char* pass_arg, client_obj* client);
+void cd_cmd(client_obj* client, char * new_dir);
 
-//file transfer functions
+//file  transfer functions
 int setup_ft_listening_sock(client_obj* client, fd_set* ft_allset_listen_p,
                             int* ft_maxfd_listen_p, int* ft_maxi,
-                            ft_main_obj ft_struct[], int mode);
+                            ft_main_obj ft_struct[], int mode, int fileFD, off_t fileSIZE);
 
 int main(int argc, char const* argv[]){
     //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
@@ -149,6 +157,7 @@ int main(int argc, char const* argv[]){
     //INIT Vars for test ftp users
     Account Accounts_arr[5];
     init_test_accounts(Accounts_arr);
+
     //-------------------------------------------------------------------------
     //-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*-*
     // FTP MAIN LOOP HERE
@@ -238,6 +247,10 @@ int main(int argc, char const* argv[]){
                         list_files_cmd(&(clients[i]));
                         continue;
                     }
+                    else if(strcmp("CD", cmd) == 0){
+                        cd_cmd(&(clients[i]), arg);
+                        continue;
+                    }
                     else if(strcmp("PUT", cmd) == 0){
                         //PUT cmd comes with 2 args, the filename and filesize
                         int  new_file_port = 0;
@@ -249,7 +262,7 @@ int main(int argc, char const* argv[]){
 
                         //send client PORT for connecting
                         new_file_port =  setup_ft_listening_sock(&(clients[i]), &ft_allset_listen,
-                                                                 &ft_maxfd_listen, &ft_maxi,ft_struct, 2);
+                                                                 &ft_maxfd_listen, &ft_maxi,ft_struct, 2, fileFD, filesize);
                         if(new_file_port < 0){
                             strcpy(lreply, "0");
                         }else{
@@ -264,14 +277,16 @@ int main(int argc, char const* argv[]){
                         struct stat file_stat;
                         int fileFD, new_file_port = 0;
                         char lreply[200];
-                        fileFD = open(arg, O_RDONLY, 0);
+                        char file_path[200];
+                        strcat(strcat(strcpy(file_path,(clients[i].user_p)->cwd),"/"),arg);
+                        fileFD = open(file_path, O_RDONLY, 0);
                         if((fstat(fileFD, &file_stat)) < 0){
                             reply = "filename: no such file on server";
                             send(clients[i].sock, reply, strlen(reply), 0);
                             continue;
                         }
                         new_file_port =  setup_ft_listening_sock(&(clients[i]), &ft_allset_listen,
-                                                                 &ft_maxfd_listen, &ft_maxi,ft_struct, 1);
+                                                                 &ft_maxfd_listen, &ft_maxi,ft_struct, 1, fileFD, file_stat.st_size);
                         if(new_file_port < 0){
                             strcpy(lreply, "0 0");
                         }else{
@@ -297,11 +312,24 @@ int main(int argc, char const* argv[]){
             if ((ft_FTReady_sockfd  = (ft_struct[k].fsock)) < 0) continue;
             if(FD_ISSET(ft_FTReady_sockfd, &wset)){
                 //switch between PUT and GET
+                int bytes_transferred = 0;
+                int status;
                 if(ft_struct[k].mode == 1){ //GET MODE
                     //TODO THIS IS WHERE WE TRANSFER FILE TO CLIENT
                     char* freply;
                     freply = "WUBBA LUBBA DUB DUB";
-                    send(ft_FTReady_sockfd, freply, strlen(freply), 0);
+
+                    //send(ft_FTReady_sockfd, freply, strlen(freply), 0);
+                    off_t x = 0;
+                    //status = sendfile(ft_struct[k].file_FD,ft_FTReady_sockfd, 0, &(ft_struct[k].file_size), 0, 0);
+                    status = sendfile(ft_struct[k].file_FD,ft_FTReady_sockfd, 0, &x, 0, 0);
+                    if (status == -1){
+                        perror("Sendfile error ");
+                    }
+                    //printf("Status: %d, bytes sent: %jd: fileFD:%d\n", status, (intmax_t)ft_struct[k].file_size, ft_struct[k].file_FD );
+                    printf("Status: %d, bytes sent: %jd: fileFD:%d\n", status, (intmax_t)x, ft_struct[k].file_FD );
+                    //bytes_transferred = sendile(ft_FTReady_sockfd,ft_struct[k].file_FD, NULL, ft_struct[k].file_size );
+
                 }
                 else if(ft_struct[k].mode == 2){//PUT MODE
                     char in_buff[BUF_SIZE];
@@ -485,6 +513,36 @@ void pwd_cmd(client_obj* client){
     send(client->sock, reply, strlen(reply), 0);
 }
 
+void cd_cmd(client_obj* client, char * new_dir){
+    //credits: github/mslos
+    assert((client->user_p)!= NULL);
+    char current_dir[DIR_PATH_SIZE];
+    strcpy(current_dir,(client->user_p)->cwd);
+	char new_path[DIR_PATH_SIZE];
+    DIR* dir;
+	if(new_dir[0] == '/') {
+		strcpy(new_path,new_dir);
+	}
+	else if (new_dir[0]=='~') {//shell-tilder expansion for tilde
+	   	wordexp_t p;//for
+	   	wordexp(new_dir, &p, 0);
+	    strcpy(new_path,p.we_wordv[0]);
+	    wordfree(&p);
+	}
+	else
+		strcat(strcat(strcpy(new_path,current_dir),"/"),new_dir);
+	if ((dir = opendir(new_path))) {
+        char* c;
+		realpath(new_path,current_dir);
+        strcpy( (client->user_p)->cwd, current_dir);
+        pwd_cmd(client);
+	    closedir(dir);
+	}
+	else{
+        char* reply = "CD error\n\n";
+        send(client->sock, reply, strlen(reply), 0);
+    }
+}
 
 void list_files_cmd(client_obj* client){
     assert((client->user_p)!= NULL);
@@ -509,7 +567,7 @@ void list_files_cmd(client_obj* client){
 //returns port for file transfer on successful completion, else returns 0
 int setup_ft_listening_sock(client_obj* client, fd_set* ft_allset_listen_p,
                             int* ft_maxfd_listen_p, int* ft_maxi,
-                            ft_main_obj ft_struct[], int mode)
+                            ft_main_obj ft_struct[], int mode, int fileFD, off_t fileSIZE)
 {
     int j, new_file_listensock, new_file_port = 0;
 
@@ -527,6 +585,8 @@ int setup_ft_listening_sock(client_obj* client, fd_set* ft_allset_listen_p,
             ft_struct[j].fsock = -1;//shall be updated once accept()
             ft_struct[j].mode = mode;//PUT sock or GET sock
             ft_struct[j].user_p = client->user_p;
+            ft_struct[j].file_FD = fileFD;
+            ft_struct[j].file_size = fileSIZE;
             break;
         }
     }
